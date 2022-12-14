@@ -7,7 +7,9 @@ import scipy.sparse as sp
 from input_data import load_data
 import inspect
 from preprocessing import preprocess_graph, sparse_to_tuple, mask_test_edges, construct_feed_dict
-from hopInfo import addHopFeatures
+from hopInfo import addHopFeatures, addHopAdjacency
+import pickle
+
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 
@@ -63,21 +65,41 @@ def get_model(model_str, placeholders, num_features, num_nodes, features_nonzero
 #     test_edges = a list of pairs containing randomly selected 10% edges, one-directional, type: list of list
 #     test_edges_false = random unique fake edges of same size of test_edges that does not contain in the whole edge dataset
 #     adj_orig = TODO adj metrics without self loop and zero rows, for cora size is (2708, 2708) since it does not have any all-zero row
-def format_data(data_name):
+def format_data(data_name, n_hop_enable, hop_count):
     # Load data
-    adj, features, y_test, tx, ty, test_maks, true_labels = load_data(data_name)
-    features = addHopFeatures(features, adj) # Author: Tonni
+    if data_name == 'cora' or data_name == 'citeseer' or data_name == 'pubmed':
+        adj, features, y_test, tx, ty, test_maks, true_labels = load_data(data_name)
+    elif data_name == 'hsa' or data_name == 'mmu' or data_name == 'rno':
+        adj, features, y_test, tx, ty, test_maks, true_labels = load_data('cora')         # fake; only for fulfilling criteria for true_labels
+        directory = 'KEGG_adjacencyDataset_pickles/' + data_name + '_adjacency'
+        infile = open(directory,'rb')
+        adj = pickle.load(infile)                                                         # replacing adj
+        # adj = adj[0:2000]                                                                 # take 2000 nodes
+        infile.close()
+        adj = sp.csr_matrix(adj)
+        features = sp.identity(adj.shape[0])                                              # replacing features
+
+    # Apply method to get information till n_hop if "n_hop_enable" is true                # Author : Tonni
+    if n_hop_enable: # if dataset is cora-type, applying hop-count for features, if dataset is mmu-type, applying hop-info for adjacency only 
+        if data_name == 'cora' or data_name == 'citeseer' or data_name == 'pubmed':
+            features = addHopFeatures(features, adj, hop_count) 
+        elif data_name == 'hsa' or data_name == 'mmu' or data_name == 'rno':
+            adj = sp.csr_matrix(adj)
+            adj = addHopAdjacency(adj, hop_count + 1)
 
     # Store original adjacency matrix (without diagonal entries) for later
     adj_orig = adj
     adj_orig = adj_orig - sp.dia_matrix((adj_orig.diagonal()[np.newaxis, :], [0]), shape=adj_orig.shape) # It is probably excluding all self-loops
     adj_orig.eliminate_zeros() # deletes all zero rows from the matrix
 
-    adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false = mask_test_edges(adj)
-    adj = adj_train
+    adj_train, train_edges, val_edges, val_edges_false, test_edges, test_edges_false = mask_test_edges(adj)  # memory exceeds in this line
+    print("------------mask_test_edges done------------")  
+
+    adj = adj_train  
 
     if FLAGS.features == 0:
         features = sp.identity(features.shape[0])  # featureless
+
 
     # Some preprocessing
     adj_norm = preprocess_graph(adj) # Makes sparse to tuple, size of each element(numpy array) in tuple = 11684, normalized
@@ -98,10 +120,12 @@ def format_data(data_name):
     adj_label = sparse_to_tuple(adj_label) # sparse_to_tuple return coordinates, values, shapes
     items = [adj, num_features, num_nodes, features_nonzero, pos_weight, norm, adj_norm, adj_label, features, true_labels, train_edges, val_edges, val_edges_false, test_edges, test_edges_false, adj_orig]
     feas = {}
+
     for item in items:
         # item_name = [ k for k,v in locals().iteritems() if v == item][0]
         feas[retrieve_name(item)] = item
 
+    feas["num_features"] = num_features # temporary fix
 
     return feas
 
